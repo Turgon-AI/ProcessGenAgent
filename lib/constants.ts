@@ -7,7 +7,9 @@ export const DEFAULT_MAX_ITERATIONS = 20;
 export const DEFAULT_CONFIDENCE_THRESHOLD = 0.8;
 
 // API configuration
-export const MANUS_API_TIMEOUT_MS = 300000; // 5 minutes
+export const MANUS_API_TIMEOUT_MS = 600000; // 10 minutes for task completion
+export const MANUS_POLL_INTERVAL_MS = 5000; // Poll every 5 seconds
+export const MANUS_MAX_POLL_ATTEMPTS = 120; // Max 10 minutes of polling
 export const CHECKER_API_TIMEOUT_MS = 60000; // 1 minute
 export const API_RETRY_COUNT = 3;
 export const API_RETRY_DELAY_MS = 1000;

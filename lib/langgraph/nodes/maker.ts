@@ -3,8 +3,8 @@
 import { WorkflowState } from '../state';
 import { createManusClient } from '../../manus/client';
 import { ManusFileInput } from '../../manus/types';
-import { uploadIterationOutput } from '../../storage/files';
 import { UploadedFile } from '@/types';
+import { v4 as uuidv4 } from 'uuid';
 
 interface MakerNodeDeps {
   manusApiKey: string;
@@ -16,31 +16,26 @@ export function createMakerNode(deps: MakerNodeDeps) {
 
   return async (state: WorkflowState): Promise<Partial<WorkflowState>> => {
     const iteration = state.currentIteration + 1;
-    const startTime = Date.now();
+
+    console.log(`[Maker] Starting iteration ${iteration}`);
 
     // Build the prompt with feedback if available
     const prompt = buildMakerPrompt(state.makerPrompt, state.feedback);
 
-    // Convert input files to Manus format
-    const files = await prepareInputFiles(state.inputFiles);
+    // Convert input files to Manus format (use URLs directly)
+    const files = prepareInputFiles(state.inputFiles);
 
-    // Generate presentation
+    // Generate presentation via Manus task API
     const result = await client.generatePresentation({
       prompt,
       files,
-      outputFormat: 'pptx',
       previousFeedback: state.feedback || undefined,
     });
 
-    // Upload to storage
-    const outputFile = await uploadIterationOutput(
-      result.buffer,
-      state.runId,
-      iteration,
-      `iteration_${iteration}_output.pptx`
-    );
+    console.log(`[Maker] Task completed: ${result.taskId}`);
 
-    const duration = Date.now() - startTime;
+    // Create output file record from the Manus result URL
+    const outputFile = createOutputFile(result.outputUrl, result.filename, iteration);
 
     return {
       currentIteration: iteration,
@@ -64,25 +59,27 @@ ${feedback}
 Please ensure all issues are addressed in this version.`;
 }
 
-/** Prepare input files for Manus API */
-async function prepareInputFiles(files: UploadedFile[]): Promise<ManusFileInput[]> {
-  const prepared: ManusFileInput[] = [];
-
-  for (const file of files) {
-    const content = await fetchFileAsBase64(file.url);
-    prepared.push({
-      name: file.name,
-      content,
-      mimeType: file.type,
-    });
-  }
-
-  return prepared;
+/** Prepare input files for Manus API (use URLs directly) */
+function prepareInputFiles(files: UploadedFile[]): ManusFileInput[] {
+  return files.map((file) => ({
+    name: file.name,
+    url: file.url,
+    mimeType: file.type,
+  }));
 }
 
-/** Fetch file and convert to base64 */
-async function fetchFileAsBase64(url: string): Promise<string> {
-  const response = await fetch(url);
-  const buffer = await response.arrayBuffer();
-  return Buffer.from(buffer).toString('base64');
+/** Create an UploadedFile record from Manus output */
+function createOutputFile(
+  url: string,
+  filename: string,
+  iteration: number
+): UploadedFile {
+  return {
+    id: uuidv4(),
+    name: filename || `iteration_${iteration}_output.pptx`,
+    size: 0, // Size unknown from URL
+    type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    url,
+    uploadedAt: new Date(),
+  };
 }

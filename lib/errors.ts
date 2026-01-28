@@ -11,6 +11,7 @@ export enum ErrorCode {
   MANUS_API_ERROR = 'MANUS_API_ERROR',
   MANUS_TIMEOUT = 'MANUS_TIMEOUT',
   MANUS_INVALID_RESPONSE = 'MANUS_INVALID_RESPONSE',
+  MANUS_TASK_FAILED = 'MANUS_TASK_FAILED',
 
   // Checker errors
   CHECKER_API_ERROR = 'CHECKER_API_ERROR',
@@ -35,8 +36,8 @@ export class AppError extends Error {
 }
 
 export class ManusError extends AppError {
-  constructor(message: string, details?: Record<string, unknown>) {
-    super(message, ErrorCode.MANUS_API_ERROR, details);
+  constructor(message: string, details?: { code?: ErrorCode; [key: string]: unknown }) {
+    super(message, details?.code || ErrorCode.MANUS_API_ERROR, details);
     this.name = 'ManusError';
   }
 }
