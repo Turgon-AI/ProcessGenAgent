@@ -494,6 +494,253 @@ Open http://localhost:3000
 3. **Shared Components**: Icons and indicators extracted for reuse
 4. **SSE Handler Factory**: Event handling logic extracted from hook
 
+## Common Tasks
+
+### Adding a New SSE Event Type
+
+1. **Define the type** in `types/index.ts`:
+```typescript
+export interface SSENewEventType {
+  type: 'new_event';
+  // ... fields
+  timestamp: string;
+}
+```
+
+2. **Add to SSEEvent union** in `types/index.ts`:
+```typescript
+export type SSEEvent = ... | SSENewEventType;
+```
+
+3. **Add handler** in `lib/sse/handlers.ts`:
+```typescript
+// Add to SSEHandlers interface
+onNewEvent: (data: SomeType) => void;
+
+// Add case in createSSEHandler switch
+case 'new_event':
+  handleNewEvent(event, handlers);
+  break;
+```
+
+4. **Emit from backend** in `app/api/workflow/status/[runId]/route.ts`
+
+### Adding a New Store Action
+
+1. **Add to interface** in `store/types.ts`:
+```typescript
+newAction: (param: ParamType) => void;
+```
+
+2. **Implement** in appropriate `store/actions/` file:
+```typescript
+newAction: (param) => set((state) => ({
+  // state changes
+})),
+```
+
+3. **Use in component**:
+```typescript
+const { newAction } = useWorkflowStore();
+```
+
+### Adding a New API Endpoint
+
+1. **Create route file**: `app/api/[path]/route.ts`
+2. **Keep it thin** - logic goes in `lib/`
+3. **Add types** if needed in `types/index.ts`
+
+```typescript
+import { NextRequest, NextResponse } from 'next/server';
+import { someService } from '@/lib/someService';
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const result = await someService.doSomething(body);
+    return NextResponse.json(result);
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Something went wrong' },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### Adding a New Component
+
+1. **Create file** in `components/` (or `components/shared/` if reusable)
+2. **Define props interface** at top of file
+3. **Keep under 200 lines** - extract sub-components if needed
+4. **Export from index** if in a folder
+
+```typescript
+'use client';
+
+import { SomeType } from '@/types';
+
+interface MyComponentProps {
+  data: SomeType;
+  onAction: () => void;
+}
+
+export function MyComponent({ data, onAction }: MyComponentProps) {
+  return (
+    // JSX
+  );
+}
+```
+
+---
+
+## API Reference
+
+### POST /api/workflow/start
+Starts a new workflow run.
+
+**Request:**
+```typescript
+{
+  fileIds: string[];
+  makerPrompt: string;
+  checkerPrompt: string;
+  guidelines?: string;
+  sampleFileIds?: string[];
+  config: {
+    maxIterations: number;
+    confidenceThreshold: number;
+    autoStopOnPass: boolean;
+  };
+}
+```
+
+**Response:**
+```typescript
+{ runId: string }
+```
+
+### GET /api/workflow/status/[runId]
+SSE stream for workflow progress. Returns events:
+
+| Event | Description |
+|-------|-------------|
+| `iteration_start` | New iteration beginning |
+| `maker_complete` | PPTX generated |
+| `checker_complete` | Validation done |
+| `workflow_complete` | Workflow finished |
+| `error` | Error occurred |
+| `heartbeat` | Keep-alive (every 30s) |
+
+### POST /api/workflow/stop/[runId]
+Stops a running workflow.
+
+### POST /api/files/upload
+Upload files to Vercel Blob.
+
+**Request:** `multipart/form-data` with `file` field
+
+**Response:**
+```typescript
+{
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  url: string;
+  uploadedAt: string;
+}
+```
+
+### GET /api/files/download/[id]
+Download a file by ID.
+
+---
+
+## Key Files Explained
+
+| File | Purpose | When to modify |
+|------|---------|----------------|
+| `lib/langgraph/workflow.ts` | Defines the maker-checker graph | Adding new nodes or changing flow |
+| `lib/langgraph/nodes/maker.ts` | Calls Manus API | Changing generation logic |
+| `lib/langgraph/nodes/checker.ts` | Calls Claude API | Changing validation logic |
+| `lib/checker/prompts.ts` | Builds checker prompt | Changing how validation works |
+| `store/workflowStore.ts` | Composes all state | Adding new state slices |
+| `hooks/useWorkflow.ts` | Manages SSE connection | Changing how events are handled |
+| `app/page.tsx` | Main page composition | Adding/removing page sections |
+| `types/index.ts` | All TypeScript types | Adding new data structures |
+
+---
+
+## Workflow Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Frontend                              │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────────────┐  │
+│  │  Zustand │◄───│   Hooks  │◄───│  SSE EventSource     │  │
+│  │  Store   │    │          │    │  /api/workflow/status│  │
+│  └────┬─────┘    └──────────┘    └──────────────────────┘  │
+│       │                                     ▲               │
+│       ▼                                     │               │
+│  ┌──────────┐                              │               │
+│  │   UI     │                              │               │
+│  │Components│                              │               │
+│  └──────────┘                              │               │
+└─────────────────────────────────────────────┼───────────────┘
+                                              │
+                    POST /api/workflow/start  │ SSE Events
+                              │               │
+┌─────────────────────────────┼───────────────┼───────────────┐
+│                        Backend              │               │
+│                             ▼               │               │
+│  ┌──────────────────────────────────────────┴────────────┐ │
+│  │                   LangGraph Workflow                   │ │
+│  │  ┌─────────┐    ┌─────────┐    ┌─────────┐           │ │
+│  │  │  START  │───►│  MAKER  │───►│ CHECKER │           │ │
+│  │  └─────────┘    └────┬────┘    └────┬────┘           │ │
+│  │                      │              │                 │ │
+│  │                      │         Pass?│                 │ │
+│  │                      │              ▼                 │ │
+│  │                      │    ┌─────────────────┐        │ │
+│  │                      │    │  Yes: END       │        │ │
+│  │                      │    │  No: Loop back  │────────┤ │
+│  │                      │    │  Max: END       │        │ │
+│  │                      │    └─────────────────┘        │ │
+│  │                      │              │                 │ │
+│  │                      ◄──────────────┘ (with feedback) │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                             │               │               │
+│                             ▼               ▼               │
+│                      ┌──────────┐    ┌──────────┐          │
+│                      │  Manus   │    │  Claude  │          │
+│                      │   API    │    │   API    │          │
+│                      └──────────┘    └──────────┘          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Import Conventions
+
+```typescript
+// External packages first
+import { useState } from 'react';
+import { create } from 'zustand';
+
+// Internal absolute imports (using @/ alias)
+import { WorkflowState, UploadedFile } from '@/types';
+import { useWorkflowStore } from '@/store/workflowStore';
+import { createManusClient } from '@/lib/manus/client';
+import { Button } from '@/components/ui/button';
+import { LoadingSpinner } from '@/components/shared';
+
+// Relative imports only within same module
+import { helperFunction } from './utils';
+```
+
+---
+
 ## Code Review Checklist
 
 Before committing, verify:
