@@ -1,0 +1,5 @@
+Create a single-slide process flow titled "New Employee Laptop Setup".
+
+Use 4 steps total and keep each step name short (2-4 words).
+Use the exact step descriptions from the source document.
+

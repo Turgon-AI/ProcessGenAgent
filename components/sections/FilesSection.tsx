@@ -22,16 +22,15 @@ interface FilesSectionProps {
 
 const INPUT_ACCEPT = {
   'application/pdf': ['.pdf'],
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-  'application/msword': ['.doc'],
-  'text/plain': ['.txt'],
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
 };
 
 const SAMPLE_ACCEPT = {
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
   'application/vnd.ms-powerpoint': ['.ppt'],
   'application/pdf': ['.pdf'],
+  'image/png': ['.png'],
+  'image/jpeg': ['.jpg', '.jpeg'],
+  'image/gif': ['.gif'],
 };
 
 export function FilesSection({
@@ -75,7 +74,7 @@ export function FilesSection({
               onChange={(e) => onGuidelinesChange(e.target.value)}
               placeholder="Enter additional guidelines for the checker to follow..."
               disabled={disabled}
-              className="mt-2 w-full min-h-[100px] p-3 rounded-md border bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring"
+              className="mt-2 w-full h-[140px] p-3 rounded-md border bg-background text-sm resize-none overflow-y-auto focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
           <FileUploader

@@ -1,0 +1,7 @@
+New Employee Laptop Setup
+
+Step 1: Request submitted - The hiring manager submits the laptop request in the IT portal.
+Step 2: Inventory check - IT checks available stock and reserves a laptop.
+Step 3: Device configuration - IT installs standard software and applies security policies.
+Step 4: Handoff - The laptop is delivered to the new employee on day one.
+

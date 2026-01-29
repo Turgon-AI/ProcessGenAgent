@@ -1,0 +1,4 @@
+Keep the slide minimal with a clean layout.
+Use left-aligned text and consistent font sizes.
+Include a short footer line: "Outcome: Faster onboarding".
+

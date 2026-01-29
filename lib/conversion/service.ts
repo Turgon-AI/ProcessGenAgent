@@ -2,28 +2,50 @@
 // In production, use LibreOffice or a cloud conversion API
 
 import { ConversionResult, ConversionService } from './types';
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /** Create a conversion service */
 export function createConversionService(): ConversionService {
   return {
     pptxToPdf: convertPptxToPdf,
     pptxToImages: convertPptxToImages,
+    fileToPdf: convertFileToPdf,
   };
 }
 
 /** Convert PPTX to PDF */
 async function convertPptxToPdf(pptxBuffer: Buffer): Promise<ConversionResult> {
-  // Check if we have a conversion API configured
+  return convertFileToPdf(
+    pptxBuffer,
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  );
+}
+
+/** Convert any supported file to PDF */
+async function convertFileToPdf(
+  fileBuffer: Buffer,
+  mimeType: string
+): Promise<ConversionResult> {
   const apiUrl = process.env.CONVERSION_API_URL;
+  const libreOfficePath = process.env.LIBREOFFICE_PATH;
 
   if (apiUrl) {
-    return await cloudConvertToPdf(pptxBuffer, apiUrl);
+    return await cloudConvertToPdf(fileBuffer, apiUrl, mimeType);
   }
 
-  // Fallback: Return a mock PDF for development
-  // In production, set up LibreOffice or use a cloud service
-  console.warn('No conversion service configured, using mock PDF');
-  return createMockPdfResult(pptxBuffer);
+  if (libreOfficePath) {
+    return await localConvertToPdf(fileBuffer, mimeType, libreOfficePath);
+  }
+
+  // Fallback: Return empty buffer to skip invalid PDF attachments
+  console.warn('No conversion service configured, skipping PDF conversion');
+  return createMockPdfResult(fileBuffer);
 }
 
 /** Convert PPTX to slide images */
@@ -41,16 +63,17 @@ async function convertPptxToImages(pptxBuffer: Buffer): Promise<Buffer[]> {
 
 /** Cloud conversion to PDF */
 async function cloudConvertToPdf(
-  pptxBuffer: Buffer,
-  apiUrl: string
+  fileBuffer: Buffer,
+  apiUrl: string,
+  mimeType: string
 ): Promise<ConversionResult> {
   const response = await fetch(`${apiUrl}/convert/pdf`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'Content-Type': mimeType,
       'Authorization': `Bearer ${process.env.CONVERSION_API_KEY || ''}`,
     },
-    body: new Uint8Array(pptxBuffer),
+    body: new Uint8Array(fileBuffer),
   });
 
   if (!response.ok) {
@@ -88,12 +111,67 @@ async function cloudConvertToImages(
   return data.images.map((img) => Buffer.from(img, 'base64'));
 }
 
+async function localConvertToPdf(
+  fileBuffer: Buffer,
+  mimeType: string,
+  libreOfficePath: string
+): Promise<ConversionResult> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversion-'));
+  const inputPath = path.join(tempDir, `input${extensionForMime(mimeType)}`);
+  const outputPath = path.join(tempDir, 'input.pdf');
+
+  try {
+    await fs.writeFile(inputPath, fileBuffer);
+
+    await execFileAsync(libreOfficePath, [
+      '--headless',
+      '--convert-to',
+      'pdf',
+      '--outdir',
+      tempDir,
+      inputPath,
+    ]);
+
+    const pdfBuffer = await fs.readFile(outputPath);
+
+    return {
+      buffer: pdfBuffer,
+      mimeType: 'application/pdf',
+      pageCount: 1,
+    };
+  } catch (error) {
+    throw new Error(`Local conversion failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await safeRemove(tempDir);
+  }
+}
+
+function extensionForMime(mimeType: string): string {
+  const mapping: Record<string, string> = {
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/msword': '.doc',
+    'text/plain': '.txt',
+    'application/pdf': '.pdf',
+  };
+
+  return mapping[mimeType] || '.bin';
+}
+
+async function safeRemove(targetPath: string): Promise<void> {
+  try {
+    await fs.rm(targetPath, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`Failed to clean temp conversion dir: ${targetPath}`, error);
+  }
+}
+
 /** Create mock PDF result for development */
 function createMockPdfResult(pptxBuffer: Buffer): ConversionResult {
-  // Return the original buffer with PDF metadata
-  // This is just for development - checker will work with text-only review
+  // Return an empty buffer so callers skip attaching invalid PDFs.
   return {
-    buffer: pptxBuffer,
+    buffer: Buffer.alloc(0),
     mimeType: 'application/pdf',
     pageCount: 1,
   };

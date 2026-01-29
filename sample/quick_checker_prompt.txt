@@ -1,0 +1,4 @@
+Review the slide against the source document and basic style rules.
+Flag any missing steps, wrong text, or ordering errors.
+Return a confidence score from 0.0 to 1.0.
+

@@ -17,6 +17,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (type === 'input') {
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      if (!isPdf) {
+        return NextResponse.json(
+          { error: 'Input files must be PDF' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Generate unique file ID
     const fileId = uuidv4();
     const category = type === 'sample' ? 'samples' : 'inputs';

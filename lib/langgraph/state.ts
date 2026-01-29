@@ -21,8 +21,11 @@ export const WorkflowStateAnnotation = Annotation.Root({
   // Runtime state (updated each iteration)
   currentIteration: Annotation<number>,
   currentOutput: Annotation<UploadedFile | null>,
+  currentOutputPdf: Annotation<UploadedFile | null>,
   currentThumbnails: Annotation<string[]>,
   feedback: Annotation<string | null>,
+  manusTaskId: Annotation<string | null>,
+  lastOutputSignature: Annotation<string | null>,
 
   // History (appended each iteration)
   iterationHistory: Annotation<IterationRecord[]>({
@@ -55,8 +58,11 @@ export function createInitialState(params: {
     ...params,
     currentIteration: 0,
     currentOutput: null,
+    currentOutputPdf: null,
     currentThumbnails: [],
     feedback: null,
+    manusTaskId: null,
+    lastOutputSignature: null,
     iterationHistory: [],
     finalOutput: null,
     success: false,

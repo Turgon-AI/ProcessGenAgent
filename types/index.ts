@@ -220,8 +220,11 @@ export interface LangGraphState {
   runId: string;
   currentIteration: number;
   currentOutput: UploadedFile | null;
+  currentOutputPdf: UploadedFile | null;
   currentThumbnails: string[];
   feedback: string | null;
+  manusTaskId: string | null;
+  lastOutputSignature: string | null;
 
   // History
   iterationHistory: IterationRecord[];

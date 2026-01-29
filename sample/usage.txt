@@ -1,0 +1,6 @@
+Quick test set:
+1) Upload quick_source.txt as an input file.
+2) Paste quick_maker_prompt.txt into Maker.
+3) Paste quick_checker_prompt.txt into Checker.
+4) Paste quick_guidelines.txt into Guidelines (optional).
+

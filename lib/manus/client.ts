@@ -13,7 +13,6 @@ import { ManusError, ErrorCode } from '../errors';
 import {
   MANUS_API_TIMEOUT_MS,
   MANUS_POLL_INTERVAL_MS,
-  MANUS_MAX_POLL_ATTEMPTS,
 } from '../constants';
 
 const DEFAULT_BASE_URL = 'https://api.manus.ai/v1';
@@ -27,10 +26,10 @@ export function createManusClient(config: ManusConfig): ManusClient {
     apiRequest<T>(config.apiKey, baseUrl, path, options);
 
   return {
-    uploadFile: (filename, fileUrl) => uploadFile(makeRequest, filename, fileUrl),
+    uploadFile: (filename, fileUrl, mimeType) => uploadFile(makeRequest, filename, fileUrl, mimeType),
     createTask: (request) => createTask(makeRequest, request),
     getTask: (taskId) => getTask(makeRequest, taskId),
-    waitForTask: (taskId) => waitForTask(makeRequest, taskId, pollIntervalMs),
+    waitForTask: (taskId) => waitForTaskWithNewOutput(makeRequest, taskId, pollIntervalMs),
     generatePresentation: (request) =>
       generatePresentation(makeRequest, request, pollIntervalMs),
   };
@@ -42,12 +41,45 @@ type RequestFn = <T>(path: string, options: RequestInit) => Promise<T>;
 async function uploadFile(
   request: RequestFn,
   filename: string,
-  fileUrl: string
+  fileUrl: string,
+  mimeType?: string
 ): Promise<ManusFileResponse> {
-  return request<ManusFileResponse>('/files', {
+  const record = await request<ManusFileResponse>('/files', {
     method: 'POST',
-    body: JSON.stringify({ filename, file_url: fileUrl }),
+    body: JSON.stringify({ filename }),
   });
+
+  if (!record.upload_url) {
+    throw new ManusError('Manus file upload URL missing', {
+      code: ErrorCode.MANUS_INVALID_RESPONSE,
+    });
+  }
+
+  const fileResponse = await fetch(fileUrl);
+  if (!fileResponse.ok) {
+    throw new ManusError(`Failed to fetch file for upload: ${fileResponse.statusText}`, {
+      code: ErrorCode.MANUS_API_ERROR,
+    });
+  }
+
+  const contentType =
+    mimeType || fileResponse.headers.get('content-type') || 'application/octet-stream';
+
+  const uploadResponse = await fetch(record.upload_url, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': contentType,
+    },
+    body: await fileResponse.arrayBuffer(),
+  });
+
+  if (!uploadResponse.ok) {
+    throw new ManusError(`Failed to upload file to Manus: ${uploadResponse.statusText}`, {
+      code: ErrorCode.MANUS_API_ERROR,
+    });
+  }
+
+  return record;
 }
 
 /** Create a new task */
@@ -62,39 +94,46 @@ async function createTask(
     agent_profile: taskRequest.agentProfile || 'manus-1.6',
     connectors: taskRequest.connectors,
     create_shareable_link: taskRequest.createShareableLink ?? true,
+    task_id: taskRequest.taskId,
   };
 
-  return request<ManusTaskResponse>('/tasks', {
+  const response = await request<ManusTaskResponse>('/tasks', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  return normalizeTaskResponse(response);
 }
 
 /** Get task by ID */
 async function getTask(request: RequestFn, taskId: string): Promise<ManusTaskResponse> {
-  return request<ManusTaskResponse>(`/tasks/${taskId}`, { method: 'GET' });
+  const response = await request<ManusTaskResponse>(`/tasks/${taskId}`, { method: 'GET' });
+  return normalizeTaskResponse(response);
 }
 
-/** Poll task until completion */
-async function waitForTask(
+/** Poll task until completion and (optionally) new output */
+async function waitForTaskWithNewOutput(
   request: RequestFn,
   taskId: string,
-  pollIntervalMs: number
+  pollIntervalMs: number,
+  previousOutputSignature?: string
 ): Promise<ManusTaskResponse> {
-  for (let attempt = 0; attempt < MANUS_MAX_POLL_ATTEMPTS; attempt++) {
+  while (true) {
     const task = await getTask(request, taskId);
 
-    if (task.status === 'completed') return task;
     if (task.status === 'failed') {
       throw new ManusError(task.error?.message || 'Task failed', {
         code: ErrorCode.MANUS_TASK_FAILED,
       });
     }
 
+    if (task.status === 'completed') {
+      if (!previousOutputSignature) return task;
+      const signature = buildOutputSignature(task);
+      if (signature && signature !== previousOutputSignature) return task;
+    }
+
     await delay(pollIntervalMs);
   }
-
-  throw new ManusError('Task polling timeout', { code: ErrorCode.MANUS_TIMEOUT });
 }
 
 /** High-level: generate presentation and wait for result */
@@ -106,8 +145,22 @@ async function generatePresentation(
   // Build prompt with feedback if available
   const prompt = buildPrompt(genRequest);
 
-  // Collect attachment URLs
-  const attachments = genRequest.files?.map((f) => f.url) || [];
+  // Upload files to Manus and collect file IDs for attachments
+  const attachments = genRequest.files?.length
+    ? await Promise.all(
+        genRequest.files.map(async (file) => {
+          const uploaded = await uploadFile(request, file.name, file.url, file.mimeType);
+          return {
+            filename: file.name,
+            file_id: uploaded.id,
+          };
+        })
+      )
+    : [];
+  
+  // Track input filenames to filter them out of output (Manus re-uploads inputs with new URLs)
+  const inputFilenames = new Set(genRequest.files?.map((file) => file.name) || []);
+  console.log(`[Manus] Input filenames to filter: ${Array.from(inputFilenames).join(', ') || 'none'}`);
 
   // Create the task
   const task = await createTask(request, {
@@ -116,51 +169,254 @@ async function generatePresentation(
     taskMode: genRequest.taskMode || 'agent',
     agentProfile: genRequest.agentProfile || 'manus-1.6',
     createShareableLink: true,
+    taskId: genRequest.taskId,
   });
 
   console.log(`[Manus] Task created: ${task.id}, URL: ${task.url}`);
 
   // Wait for completion
-  const completedTask = await waitForTask(request, task.id, pollIntervalMs);
+  if (!task.id) {
+    throw new ManusError('Manus task ID missing from create task response', {
+      code: ErrorCode.MANUS_INVALID_RESPONSE,
+    });
+  }
 
-  // Extract PPTX output
-  const pptxOutput = findPptxOutput(completedTask);
+  const completedTask = await waitForTaskWithNewOutput(
+    request,
+    task.id,
+    pollIntervalMs,
+    genRequest.previousOutputSignature
+  );
+  if (!completedTask.id) {
+    throw new ManusError('Manus task ID missing from task status response', {
+      code: ErrorCode.MANUS_INVALID_RESPONSE,
+    });
+  }
+
+  // Extract PPTX output (filter out input files by checking /sandbox/ path and filename)
+  let pptxOutput = findPptxOutput(completedTask, inputFilenames);
+  let pdfOutput = findPdfOutput(completedTask, inputFilenames);
+
+  if (!pptxOutput) {
+    console.log('[Manus] PPTX not found, requesting export on same task');
+    const exportTask = await createTask(request, {
+      prompt: buildExportPrompt('pptx'),
+      taskMode: genRequest.taskMode || 'agent',
+      agentProfile: genRequest.agentProfile || 'manus-1.6',
+      createShareableLink: true,
+      taskId: completedTask.id,
+    });
+
+    if (!exportTask.id) {
+      throw new ManusError('Manus task ID missing from export request response', {
+        code: ErrorCode.MANUS_INVALID_RESPONSE,
+      });
+    }
+
+    const exportCompleted = await waitForTaskWithNewOutput(
+      request,
+      exportTask.id,
+      pollIntervalMs
+    );
+    pptxOutput = findPptxOutput(exportCompleted, inputFilenames);
+  }
+
+  if (!pdfOutput) {
+    console.log('[Manus] PDF not found, requesting export on same task');
+    const exportTask = await createTask(request, {
+      prompt: buildExportPrompt('pdf'),
+      taskMode: genRequest.taskMode || 'agent',
+      agentProfile: genRequest.agentProfile || 'manus-1.6',
+      createShareableLink: true,
+      taskId: completedTask.id,
+    });
+
+    if (!exportTask.id) {
+      throw new ManusError('Manus task ID missing from export request response', {
+        code: ErrorCode.MANUS_INVALID_RESPONSE,
+      });
+    }
+
+    const exportCompleted = await waitForTaskWithNewOutput(
+      request,
+      exportTask.id,
+      pollIntervalMs
+    );
+    pdfOutput = findPdfOutput(exportCompleted, inputFilenames);
+  }
+
+  if (!pptxOutput) {
+    throw new ManusError('No PPTX output found in task results', {
+      code: ErrorCode.MANUS_INVALID_RESPONSE,
+    });
+  }
+
+  // Build output signature from the final task state (for next iteration comparison)
+  const outputSignature = buildOutputSignature(completedTask) || undefined;
 
   return {
     taskId: completedTask.id,
     taskUrl: completedTask.url || '',
     outputUrl: pptxOutput.url,
     filename: pptxOutput.filename || 'presentation.pptx',
+    pdfUrl: pdfOutput?.url,
+    pdfFilename: pdfOutput?.filename,
+    outputSignature,
   };
 }
 
-/** Build the prompt with optional feedback */
+/** Normalize task response fields across API variants */
+function normalizeTaskResponse(task: ManusTaskResponse): ManusTaskResponse {
+  return {
+    ...task,
+    id: task.id ?? task.task_id,
+    url: task.url ?? task.task_url ?? task.share_url,
+    title: task.title ?? task.task_title,
+  };
+}
+
+/** Build the prompt for Manus */
 function buildPrompt(request: ManusGenerateRequest): string {
   let prompt = request.prompt;
 
-  if (request.previousFeedback) {
-    prompt += `\n\n## Previous Feedback to Address\n\n${request.previousFeedback}`;
-  }
-
   // Add output format instruction
-  prompt += '\n\nPlease generate the output as a PowerPoint (.pptx) file.';
+  prompt += '\n\nPlease provide both a PowerPoint (.pptx) file and a PDF export of the slides.';
 
   return prompt;
 }
 
-/** Find PPTX output from task outputs */
-function findPptxOutput(task: ManusTaskResponse): { url: string; filename?: string } {
-  const output = task.outputs?.find(
-    (o) => o.filename?.endsWith('.pptx') || o.mimeType?.includes('presentation')
-  );
+/**
+ * Check if a URL is from Manus sandbox (generated output) vs uploads (input files re-uploaded)
+ * Generated files: /sessionFile/{taskId}/sandbox/...
+ * Uploaded inputs: /users/{userId}/uploads/...
+ */
+function isGeneratedOutput(url: string): boolean {
+  return url.includes('/sandbox/') || url.includes('/sessionFile/');
+}
 
-  if (!output) {
-    throw new ManusError('No PPTX output found in task results', {
-      code: ErrorCode.MANUS_INVALID_RESPONSE,
-    });
+function isUploadedInput(url: string): boolean {
+  return url.includes('/uploads/');
+}
+
+/** Find PPTX output from task outputs - prefer generated files over uploaded inputs */
+function findPptxOutput(
+  task: ManusTaskResponse,
+  inputFilenames: Set<string>
+): { url: string; filename?: string } | null {
+  const contents = task.output?.flatMap((item) => item.content || []) || [];
+  
+  // First pass: look for generated PPTX files (in /sandbox/)
+  for (const content of contents) {
+    if (!content.fileUrl) continue;
+    const filename = content.fileName || '';
+    const mimeType = content.mimeType || '';
+    const isPptx = filename.endsWith('.pptx') || mimeType.includes('presentation');
+    
+    if (isPptx && isGeneratedOutput(content.fileUrl)) {
+      console.log(`[Manus] Found generated PPTX: ${filename} (sandbox)`);
+      return { url: content.fileUrl, filename: content.fileName };
+    }
+  }
+  
+  // Second pass: look for any PPTX that's not an input file by name
+  for (const content of contents) {
+    if (!content.fileUrl) continue;
+    const filename = content.fileName || '';
+    const mimeType = content.mimeType || '';
+    const isPptx = filename.endsWith('.pptx') || mimeType.includes('presentation');
+    
+    if (isPptx && !inputFilenames.has(filename)) {
+      console.log(`[Manus] Found PPTX by name filter: ${filename}`);
+      return { url: content.fileUrl, filename: content.fileName };
+    }
   }
 
-  return { url: output.url, filename: output.filename };
+  // Legacy outputs array
+  const legacyOutput = task.outputs?.find(
+    (o) =>
+      (o.filename?.endsWith('.pptx') || o.mimeType?.includes('presentation')) &&
+      !!o.url &&
+      (isGeneratedOutput(o.url) || !inputFilenames.has(o.filename || ''))
+  );
+
+  if (legacyOutput?.url) {
+    console.log(`[Manus] Found legacy PPTX: ${legacyOutput.filename}`);
+    return { url: legacyOutput.url, filename: legacyOutput.filename };
+  }
+
+  return null;
+}
+
+/** Find PDF output from task outputs - prefer generated files over uploaded inputs */
+function findPdfOutput(
+  task: ManusTaskResponse,
+  inputFilenames: Set<string>
+): { url: string; filename?: string } | null {
+  const contents = task.output?.flatMap((item) => item.content || []) || [];
+  
+  // First pass: look for generated PDF files (in /sandbox/) - these are exports of the presentation
+  for (const content of contents) {
+    if (!content.fileUrl) continue;
+    const filename = content.fileName || '';
+    const mimeType = content.mimeType || '';
+    const isPdf = filename.endsWith('.pdf') || mimeType.includes('pdf');
+    
+    if (isPdf && isGeneratedOutput(content.fileUrl)) {
+      console.log(`[Manus] Found generated PDF: ${filename} (sandbox)`);
+      return { url: content.fileUrl, filename: content.fileName };
+    }
+  }
+  
+  // Second pass: look for any PDF that's not an input file by name
+  // Skip this because PDFs in /uploads/ are likely the input source files
+  for (const content of contents) {
+    if (!content.fileUrl) continue;
+    const filename = content.fileName || '';
+    const mimeType = content.mimeType || '';
+    const isPdf = filename.endsWith('.pdf') || mimeType.includes('pdf');
+    
+    // Only consider if NOT in uploads (which would be re-uploaded input files)
+    if (isPdf && !isUploadedInput(content.fileUrl) && !inputFilenames.has(filename)) {
+      console.log(`[Manus] Found PDF by path/name filter: ${filename}`);
+      return { url: content.fileUrl, filename: content.fileName };
+    }
+  }
+
+  // Legacy outputs array - only if generated
+  const legacyOutput = task.outputs?.find(
+    (o) =>
+      (o.filename?.endsWith('.pdf') || o.mimeType?.includes('pdf')) &&
+      !!o.url &&
+      isGeneratedOutput(o.url)
+  );
+  
+  if (legacyOutput?.url) {
+    console.log(`[Manus] Found legacy PDF: ${legacyOutput.filename}`);
+    return { url: legacyOutput.url, filename: legacyOutput.filename };
+  }
+
+  return null;
+}
+
+function buildExportPrompt(format: 'pptx' | 'pdf'): string {
+  if (format === 'pdf') {
+    return 'Please export the presentation to a PDF file and attach it.';
+  }
+  return 'Please export the presentation to a PowerPoint (.pptx) file and attach it.';
+}
+
+function buildOutputSignature(task: ManusTaskResponse): string | null {
+  const urls: string[] = [];
+  for (const item of task.output || []) {
+    for (const content of item.content || []) {
+      if (content.fileUrl) urls.push(content.fileUrl);
+    }
+  }
+  for (const output of task.outputs || []) {
+    if (output.url) urls.push(output.url);
+  }
+  if (urls.length === 0) return null;
+  return urls.sort().join('|');
 }
 
 /** Make authenticated API request */
@@ -179,7 +435,7 @@ async function apiRequest<T>(
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        API_KEY: apiKey,
         ...options.headers,
       },
       signal: controller.signal,

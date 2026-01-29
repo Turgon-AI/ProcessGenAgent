@@ -3,7 +3,7 @@
 import { WorkflowState } from '../state';
 import { createCheckerClient } from '../../checker/client';
 import { buildCheckerPrompt, PromptContext } from '../../checker/prompts';
-import { IterationRecord } from '@/types';
+import { IterationRecord, UploadedFile } from '@/types';
 
 interface CheckerNodeDeps {
   anthropicApiKey: string;
@@ -26,17 +26,79 @@ export function createCheckerNode(deps: CheckerNodeDeps) {
       guidelines: state.guidelines,
       iterationNumber: state.currentIteration,
       previousFeedback: state.feedback || undefined,
+      confidenceThreshold: state.confidenceThreshold,
     };
     const prompt = buildCheckerPrompt(promptContext);
 
     // Fetch the presentation buffer
-    const presentationBuffer = await fetchFileAsBuffer(state.currentOutput.url);
+    const presentation = state.currentOutputPdf ?? state.currentOutput;
+    if (!presentation) {
+      throw new Error('No presentation output available for checker');
+    }
+
+    // Determine if presentation is from Manus sandbox (generated) vs uploads (input re-uploaded)
+    const isManusOutput = presentation.url.includes('manuscdn.com');
+    const isSandbox = presentation.url.includes('/sandbox/');
+    const isUploads = presentation.url.includes('/uploads/');
+    
+    console.log('\n========== CHECKER: FILES BEING SENT TO CLAUDE ==========');
+    console.log(`[PRESENTATION TO REVIEW]`);
+    console.log(`  Name: ${presentation.name}`);
+    console.log(`  Type: ${presentation.type}`);
+    console.log(`  URL: ${presentation.url.substring(0, 120)}...`);
+    if (isSandbox) {
+      console.log(`  Source: MANUS SANDBOX (generated output - CORRECT!)`);
+    } else if (isUploads) {
+      console.log(`  Source: WARNING! MANUS UPLOADS (this is an INPUT file, not generated output!)`);
+    } else if (isManusOutput) {
+      console.log(`  Source: MANUS (check path manually)`);
+    } else {
+      console.log(`  Source: WARNING: NOT from Manus!`);
+    }
+    
+    const presentationBuffer = await fetchFileAsBuffer(presentation.url);
+    console.log(`  Size: ${presentationBuffer.length} bytes`);
+    
+    console.log(`\n[SOURCE FILES (for reference)]`);
+    if (state.inputFiles.length === 0) {
+      console.log('  (none)');
+    } else {
+      state.inputFiles.forEach((f, i) => {
+        console.log(`  ${i + 1}. ${f.name} (${f.type}) - ${f.url.substring(0, 80)}...`);
+      });
+    }
+    
+    console.log(`\n[SAMPLE/STYLE FILES (for reference)]`);
+    if (state.sampleFiles.length === 0) {
+      console.log('  (none)');
+    } else {
+      state.sampleFiles.forEach((f, i) => {
+        console.log(`  ${i + 1}. ${f.name} (${f.type}) - ${f.url.substring(0, 80)}...`);
+      });
+    }
+    
+    const attachments = await buildAttachments([
+      ...state.inputFiles,
+      ...state.sampleFiles,
+    ]);
+    
+    console.log(`\n[TOTAL ATTACHMENTS FOR CLAUDE]`);
+    console.log(`  Presentation: 1 file (${presentation.name})`);
+    console.log(`  Source + Sample: ${attachments.length} file(s)`);
+    if (attachments.length > 0) {
+      attachments.forEach((a, i) => {
+        console.log(`    ${i + 1}. ${a.name} (${a.mimeType}, ${a.buffer.length} bytes)`);
+      });
+    }
+    console.log('==========================================================\n');
 
     // Review the presentation
     const result = await client.reviewPresentation({
       prompt,
       presentationBuffer,
-      presentationName: state.currentOutput.name,
+      presentationName: presentation.name,
+      presentationMimeType: presentation.type,
+      attachments,
     });
 
     const duration = Date.now() - startTime;
@@ -107,4 +169,27 @@ async function fetchFileAsBuffer(url: string): Promise<Buffer> {
   const response = await fetch(url);
   const arrayBuffer = await response.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+async function buildAttachments(files: UploadedFile[]) {
+  const unique = new Map<string, UploadedFile>();
+  for (const file of files) {
+    if (!unique.has(file.id)) unique.set(file.id, file);
+  }
+
+  const attachments = [];
+  for (const file of unique.values()) {
+    try {
+      const buffer = await fetchFileAsBuffer(file.url);
+      attachments.push({
+        name: file.name,
+        buffer,
+        mimeType: file.type || 'application/octet-stream',
+      });
+    } catch (error) {
+      console.warn(`[Checker] FAILED to fetch: ${file.name} - ${error}`);
+    }
+  }
+
+  return attachments;
 }

@@ -58,13 +58,13 @@ export default function Home() {
   const inputFileUpload = useFileUpload({
     type: 'input',
     maxFiles: 10,
-    acceptedTypes: ['.pdf', '.docx', '.doc', '.txt', '.pptx', '.ppt'],
+    acceptedTypes: ['.pdf'],
   });
 
   const sampleFileUpload = useFileUpload({
     type: 'sample',
     maxFiles: 5,
-    acceptedTypes: ['.pptx', '.ppt', '.pdf'],
+    acceptedTypes: ['.pptx', '.ppt', '.pdf', '.png', '.jpg', '.jpeg', '.gif'],
   });
 
   // Get last iteration for output panel

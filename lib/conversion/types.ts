@@ -9,6 +9,7 @@ export interface ConversionResult {
 export interface ConversionService {
   pptxToPdf: (pptxBuffer: Buffer) => Promise<ConversionResult>;
   pptxToImages: (pptxBuffer: Buffer) => Promise<Buffer[]>;
+  fileToPdf: (fileBuffer: Buffer, mimeType: string) => Promise<ConversionResult>;
 }
 
 export interface ConversionConfig {

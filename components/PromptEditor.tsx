@@ -113,7 +113,7 @@ export function PromptEditor({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
-        className="min-h-[200px] font-mono text-sm resize-y"
+        className="h-[200px] font-mono text-sm resize-none overflow-y-auto"
       />
 
       <div className="text-xs text-muted-foreground text-right">

@@ -10,6 +10,14 @@ export interface CheckerReviewRequest {
   prompt: string;
   presentationBuffer: Buffer;
   presentationName: string;
+  presentationMimeType: string;
+  attachments?: CheckerAttachment[];
+}
+
+export interface CheckerAttachment {
+  name: string;
+  buffer: Buffer;
+  mimeType: string;
 }
 
 export interface CheckerReviewResult {

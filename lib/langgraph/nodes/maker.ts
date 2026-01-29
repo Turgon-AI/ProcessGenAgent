@@ -16,47 +16,101 @@ export function createMakerNode(deps: MakerNodeDeps) {
 
   return async (state: WorkflowState): Promise<Partial<WorkflowState>> => {
     const iteration = state.currentIteration + 1;
+    const isFirstIteration = state.currentIteration === 0;
+    const hasFeedback = state.currentIteration > 0 && !!state.feedback;
 
-    console.log(`[Maker] Starting iteration ${iteration}`);
+    console.log('\n========== MAKER: STARTING ITERATION ==========');
+    console.log(`  Iteration: ${iteration}`);
+    console.log(`  Is First: ${isFirstIteration}`);
+    console.log(`  Has Feedback: ${hasFeedback}`);
+    console.log(`  Existing Task ID: ${state.manusTaskId || 'none (will create new)'}`);
+    console.log(`  Previous Output Signature: ${state.lastOutputSignature || 'none'}`);
 
-    // Build the prompt with feedback if available
-    const prompt = buildMakerPrompt(state.makerPrompt, state.feedback);
+    // Build the prompt: first iteration uses base prompt, later iterations only send feedback
+    const prompt = hasFeedback
+      ? buildFeedbackOnlyPrompt(state.feedback || '')
+      : buildMakerPrompt(state.makerPrompt, state.guidelines);
 
-    // Convert input files to Manus format (use URLs directly)
-    const files = prepareInputFiles(state.inputFiles);
+    console.log(`\n[PROMPT TYPE]: ${hasFeedback ? 'FEEDBACK ONLY' : 'FULL MAKER PROMPT'}`);
+    if (hasFeedback) {
+      console.log(`[FEEDBACK PREVIEW]: ${state.feedback?.substring(0, 200)}...`);
+    }
 
+    // Convert input + sample files to Manus format (use URLs directly)
+    // Only attach source files on the first iteration; Manus retains context afterward.
+    const files = isFirstIteration
+      ? prepareInputFiles(mergeFiles(state.inputFiles, state.sampleFiles))
+      : [];
+    
+    console.log(`\n[FILES SENT TO MANUS]:`);
+    if (files.length > 0) {
+      files.forEach((f, i) => {
+        console.log(`  ${i + 1}. ${f.name} (${f.mimeType})`);
+      });
+    } else {
+      console.log(`  (none - Manus has context from previous iterations)`);
+    }
+
+    console.log(`\n[CALLING MANUS API...]`);
+    
     // Generate presentation via Manus task API
     const result = await client.generatePresentation({
       prompt,
       files,
-      previousFeedback: state.feedback || undefined,
+      taskId: state.manusTaskId || undefined,
+      previousOutputSignature: state.lastOutputSignature || undefined,
+      inputUrls: isFirstIteration ? files.map((file) => file.url) : undefined,
     });
 
-    console.log(`[Maker] Task completed: ${result.taskId}`);
+    console.log(`\n[MANUS RESULT]:`);
+    console.log(`  Task ID: ${result.taskId}`);
+    console.log(`  Task URL: ${result.taskUrl}`);
+    console.log(`  Continued Existing Task: ${Boolean(state.manusTaskId)}`);
+    console.log(`  PPTX: ${result.filename}`);
+    console.log(`  PPTX URL: ${result.outputUrl.substring(0, 100)}...`);
+    console.log(`  PPTX is sandbox: ${result.outputUrl.includes('/sandbox/') ? 'YES (correct)' : 'NO (check!)'}`);
+    console.log(`  PDF: ${result.pdfFilename || 'NOT FOUND'}`);
+    if (result.pdfUrl) {
+      console.log(`  PDF URL: ${result.pdfUrl.substring(0, 100)}...`);
+      console.log(`  PDF is sandbox: ${result.pdfUrl.includes('/sandbox/') ? 'YES (correct)' : 'NO (input file!)'}`);
+    } else {
+      console.log(`  PDF URL: N/A`);
+    }
+    
+    const signatureChanged = state.lastOutputSignature !== result.outputSignature;
+    console.log(`  Signature Changed: ${signatureChanged ? 'YES (new output!)' : 'NO (same output)'}`);
+    console.log('=================================================\n');
 
     // Create output file record from the Manus result URL
     const outputFile = createOutputFile(result.outputUrl, result.filename, iteration);
+    const outputPdf = result.pdfUrl
+      ? createOutputFile(result.pdfUrl, result.pdfFilename || 'presentation.pdf', iteration, 'application/pdf')
+      : null;
 
     return {
       currentIteration: iteration,
       currentOutput: outputFile,
+      currentOutputPdf: outputPdf,
       currentThumbnails: [], // Thumbnails generated separately
+      manusTaskId: state.manusTaskId || result.taskId,
+      lastOutputSignature: result.outputSignature || null,
     };
   };
 }
 
-/** Build maker prompt with optional feedback */
-function buildMakerPrompt(basePrompt: string, feedback: string | null): string {
-  if (!feedback) return basePrompt;
+/** Build maker prompt for the first iteration */
+function buildMakerPrompt(basePrompt: string, guidelines: string): string {
+  let prompt = basePrompt;
 
-  return `${basePrompt}
+  if (guidelines?.trim()) {
+    prompt += `\n\n## Written Guidelines\n\n${guidelines.trim()}`;
+  }
 
-## Previous Feedback to Address
+  return prompt;
+}
 
-The previous version had these issues that must be fixed:
-${feedback}
-
-Please ensure all issues are addressed in this version.`;
+function buildFeedbackOnlyPrompt(feedback: string): string {
+  return `##  Feedback to Address\n\n${feedback}\n\nPlease apply ONLY these fixes in this new version.`;
 }
 
 /** Prepare input files for Manus API (use URLs directly) */
@@ -68,17 +122,31 @@ function prepareInputFiles(files: UploadedFile[]): ManusFileInput[] {
   }));
 }
 
+function mergeFiles(inputFiles: UploadedFile[], sampleFiles: UploadedFile[]): UploadedFile[] {
+  const seen = new Set<string>();
+  const merged: UploadedFile[] = [];
+
+  for (const file of [...inputFiles, ...sampleFiles]) {
+    if (seen.has(file.id)) continue;
+    seen.add(file.id);
+    merged.push(file);
+  }
+
+  return merged;
+}
+
 /** Create an UploadedFile record from Manus output */
 function createOutputFile(
   url: string,
   filename: string,
-  iteration: number
+  iteration: number,
+  mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
 ): UploadedFile {
   return {
     id: uuidv4(),
     name: filename || `iteration_${iteration}_output.pptx`,
     size: 0, // Size unknown from URL
-    type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    type: mimeType,
     url,
     uploadedAt: new Date(),
   };

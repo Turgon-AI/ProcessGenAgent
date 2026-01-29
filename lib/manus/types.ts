@@ -25,7 +25,6 @@ export type ManusTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
 // File upload request
 export interface ManusFileUploadRequest {
   filename: string;
-  fileUrl: string; // Publicly accessible URL
 }
 
 // File upload response
@@ -33,29 +32,57 @@ export interface ManusFileResponse {
   id: string;
   filename: string;
   status: string;
+  upload_url?: string;
   upload_expires_at?: string;
   created_at: string;
 }
 
 // Task creation request
+export type ManusFileIdAttachment = {
+  filename: string;
+  file_id: string;
+};
+
+export type ManusUrlAttachment = {
+  filename: string;
+  url: string;
+  mimeType?: string;
+};
+
+export type ManusBase64Attachment = {
+  filename: string;
+  fileData: string;
+};
+
+export type ManusAttachment =
+  | ManusFileIdAttachment
+  | ManusUrlAttachment
+  | ManusBase64Attachment;
+
 export interface ManusTaskCreateRequest {
   prompt: string;
-  attachments?: string[]; // File IDs or URLs
+  attachments?: ManusAttachment[];
   taskMode?: ManusTaskMode;
   agentProfile?: ManusAgentProfile;
   connectors?: string[];
   createShareableLink?: boolean;
+  taskId?: string;
 }
 
 // Task response from API
 export interface ManusTaskResponse {
-  id: string;
+  id?: string;
+  task_id?: string;
   title?: string;
+  task_title?: string;
   status: ManusTaskStatus;
   url?: string;
+  task_url?: string;
+  share_url?: string;
   created_at: string;
   updated_at?: string;
   outputs?: ManusTaskOutput[];
+  output?: ManusTaskOutputMessage[];
   error?: {
     code: string;
     message: string;
@@ -70,9 +97,25 @@ export interface ManusTaskOutput {
   mimeType?: string;
 }
 
+export interface ManusTaskOutputMessage {
+  id?: string;
+  status?: string;
+  role?: string;
+  type?: string;
+  content?: ManusTaskOutputContent[];
+}
+
+export interface ManusTaskOutputContent {
+  type: string;
+  text?: string;
+  fileUrl?: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
 // Client interface
 export interface ManusClient {
-  uploadFile: (filename: string, fileUrl: string) => Promise<ManusFileResponse>;
+  uploadFile: (filename: string, fileUrl: string, mimeType?: string) => Promise<ManusFileResponse>;
   createTask: (request: ManusTaskCreateRequest) => Promise<ManusTaskResponse>;
   getTask: (taskId: string) => Promise<ManusTaskResponse>;
   waitForTask: (taskId: string) => Promise<ManusTaskResponse>;
@@ -87,6 +130,9 @@ export interface ManusGenerateRequest {
   previousFeedback?: string;
   agentProfile?: ManusAgentProfile;
   taskMode?: ManusTaskMode;
+  taskId?: string;
+  previousOutputSignature?: string;
+  inputUrls?: string[];
 }
 
 export interface ManusFileInput {
@@ -101,4 +147,7 @@ export interface ManusGenerateResult {
   taskUrl: string;
   outputUrl: string;
   filename: string;
+  pdfUrl?: string;
+  pdfFilename?: string;
+  outputSignature?: string; // Signature of all output files for detecting new output
 }

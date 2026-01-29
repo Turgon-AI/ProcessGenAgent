@@ -6,6 +6,7 @@ export interface PromptContext {
   sampleDescriptions?: string[];
   iterationNumber: number;
   previousFeedback?: string;
+  confidenceThreshold?: number;
 }
 
 /** Build the complete checker prompt */
@@ -15,7 +16,11 @@ export function buildCheckerPrompt(context: PromptContext): string {
     buildUserCriteriaSection(context.userPrompt),
     buildGuidelinesSection(context.guidelines),
     buildSamplesSection(context.sampleDescriptions),
-    buildContextSection(context.iterationNumber, context.previousFeedback),
+    buildContextSection(
+      context.iterationNumber,
+      context.previousFeedback,
+      context.confidenceThreshold
+    ),
     buildInstructionsSection(),
     buildResponseFormatSection(),
   ];
@@ -52,10 +57,18 @@ The following are descriptions of example good presentations:
 ${formatted}`;
 }
 
-function buildContextSection(iteration: number, previousFeedback?: string): string {
+function buildContextSection(
+  iteration: number,
+  previousFeedback?: string,
+  confidenceThreshold?: number
+): string {
   let section = `## Context
 
 This is iteration #${iteration} of the generation process.`;
+
+  if (typeof confidenceThreshold === 'number') {
+    section += `\n\nConfidence threshold for passing: ${confidenceThreshold}`;
+  }
 
   if (previousFeedback) {
     section += `
