@@ -117,9 +117,9 @@ async function waitForTaskWithNewOutput(
   pollIntervalMs: number,
   previousOutputSignature?: string
 ): Promise<ManusTaskResponse> {
-  // Initial delay to allow task to propagate (helps with eventual consistency on cloud)
+  // Small initial delay to allow task to propagate (helps with eventual consistency on cloud)
   console.log(`[Manus] Waiting for task to propagate...`);
-  await delay(2000);
+  await delay(1000);
   
   let notFoundRetries = 0;
   const maxNotFoundRetries = 5;

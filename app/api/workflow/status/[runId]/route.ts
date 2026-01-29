@@ -8,6 +8,8 @@ import { SSE_HEARTBEAT_INTERVAL_MS } from '@/lib/constants';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// Maximize function timeout (Pro: 300s, Enterprise: up to 900s)
+export const maxDuration = 800;
 
 export async function GET(
   request: NextRequest,
