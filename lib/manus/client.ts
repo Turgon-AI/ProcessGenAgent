@@ -55,31 +55,96 @@ async function uploadFile(
     });
   }
 
-  const fileResponse = await fetch(fileUrl);
-  if (!fileResponse.ok) {
-    throw new ManusError(`Failed to fetch file for upload: ${fileResponse.statusText}`, {
-      code: ErrorCode.MANUS_API_ERROR,
-    });
-  }
+  // Fetch the file content with retry
+  const fileBuffer = await fetchWithRetry(fileUrl, filename);
+  const contentType = mimeType || 'application/octet-stream';
 
-  const contentType =
-    mimeType || fileResponse.headers.get('content-type') || 'application/octet-stream';
-
-  const uploadResponse = await fetch(record.upload_url, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': contentType,
-    },
-    body: await fileResponse.arrayBuffer(),
-  });
-
-  if (!uploadResponse.ok) {
-    throw new ManusError(`Failed to upload file to Manus: ${uploadResponse.statusText}`, {
-      code: ErrorCode.MANUS_API_ERROR,
-    });
-  }
+  // Upload to Manus with retry
+  await uploadWithRetry(record.upload_url, fileBuffer, contentType, filename);
 
   return record;
+}
+
+/** Fetch file with retry for transient network errors */
+async function fetchWithRetry(
+  url: string,
+  filename: string,
+  maxRetries = 3
+): Promise<ArrayBuffer> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[Manus] Fetching file ${filename} (attempt ${attempt}/${maxRetries})`);
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return await response.arrayBuffer();
+    } catch (error) {
+      lastError = error as Error;
+      console.warn(`[Manus] Fetch failed for ${filename}: ${lastError.message}`);
+      if (attempt < maxRetries) {
+        const waitMs = attempt * 2000; // Exponential backoff: 2s, 4s, 6s
+        console.log(`[Manus] Retrying in ${waitMs}ms...`);
+        await delay(waitMs);
+      }
+    }
+  }
+  
+  throw new ManusError(`Failed to fetch file ${filename} after ${maxRetries} attempts: ${lastError?.message}`, {
+    code: ErrorCode.MANUS_API_ERROR,
+  });
+}
+
+/** Upload to Manus with retry for transient network errors */
+async function uploadWithRetry(
+  uploadUrl: string,
+  buffer: ArrayBuffer,
+  contentType: string,
+  filename: string,
+  maxRetries = 3
+): Promise<void> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[Manus] Uploading ${filename} to Manus (attempt ${attempt}/${maxRetries})`);
+      const response = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': contentType,
+        },
+        body: buffer,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      console.log(`[Manus] Upload successful for ${filename}`);
+      return;
+    } catch (error) {
+      lastError = error as Error;
+      const isNetworkError = lastError.message.includes('ECONNRESET') || 
+                             lastError.message.includes('fetch failed') ||
+                             lastError.message.includes('network');
+      console.warn(`[Manus] Upload failed for ${filename}: ${lastError.message}`);
+      
+      if (attempt < maxRetries && isNetworkError) {
+        const waitMs = attempt * 2000; // Exponential backoff: 2s, 4s, 6s
+        console.log(`[Manus] Retrying in ${waitMs}ms...`);
+        await delay(waitMs);
+      } else if (!isNetworkError) {
+        // Non-network error, don't retry
+        break;
+      }
+    }
+  }
+  
+  throw new ManusError(`Failed to upload ${filename} to Manus after ${maxRetries} attempts: ${lastError?.message}`, {
+    code: ErrorCode.MANUS_API_ERROR,
+  });
 }
 
 /** Create a new task */

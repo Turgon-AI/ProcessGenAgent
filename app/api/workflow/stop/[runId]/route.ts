@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { activeWorkflows } from '../../start/route';
+import { getWorkflow, setWorkflowShouldStop, updateWorkflowStatus } from '@/lib/storage/workflow-store';
 
 export async function POST(
   request: NextRequest,
@@ -8,7 +8,7 @@ export async function POST(
   try {
     const { runId } = await params;
 
-    const workflow = activeWorkflows.get(runId);
+    const workflow = await getWorkflow(runId);
     if (!workflow) {
       return NextResponse.json(
         { error: 'Workflow not found' },
@@ -17,11 +17,8 @@ export async function POST(
     }
 
     // Signal the workflow to stop
-    activeWorkflows.set(runId, {
-      ...workflow,
-      shouldStop: true,
-      status: 'stopped',
-    });
+    await setWorkflowShouldStop(runId, true);
+    await updateWorkflowStatus(runId, 'stopped');
 
     return NextResponse.json({
       runId,

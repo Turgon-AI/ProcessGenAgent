@@ -1,10 +1,14 @@
 import { NextRequest } from 'next/server';
-import { activeWorkflows } from '../../start/route';
 import { SSEEvent, WorkflowStartRequest } from '@/types';
 import { executeWorkflow, getWorkflowConfig } from '@/lib/langgraph';
 import { runMockWorkflow } from '@/lib/langgraph/mock';
 import { getFiles } from '@/lib/storage/registry';
 import { SSE_HEARTBEAT_INTERVAL_MS } from '@/lib/constants';
+import {
+  getWorkflow,
+  updateWorkflowStatus,
+  StoredWorkflow,
+} from '@/lib/storage/workflow-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,8 +21,9 @@ export async function GET(
 ) {
   const { runId } = await params;
 
-  const workflow = activeWorkflows.get(runId);
+  const workflow = await getWorkflow(runId);
   if (!workflow) {
+    console.log(`[Status] Workflow not found: ${runId}`);
     return notFoundResponse();
   }
 
@@ -26,10 +31,7 @@ export async function GET(
 }
 
 /** Create SSE stream response */
-function createSSEResponse(
-  runId: string,
-  workflow: { request: WorkflowStartRequest; status: string; shouldStop: boolean }
-) {
+function createSSEResponse(runId: string, workflow: StoredWorkflow) {
   const encoder = new TextEncoder();
   let heartbeatInterval: NodeJS.Timeout | null = null;
 
@@ -44,17 +46,20 @@ function createSSEResponse(
         controller.enqueue(encoder.encode(': heartbeat\n\n'));
       };
 
-      const shouldStop = () => activeWorkflows.get(runId)?.shouldStop ?? false;
+      const shouldStop = async () => {
+        const current = await getWorkflow(runId);
+        return current?.shouldStop ?? false;
+      };
 
       // Start heartbeat to keep connection alive
       heartbeatInterval = setInterval(sendHeartbeat, SSE_HEARTBEAT_INTERVAL_MS);
 
       try {
         await runWorkflow(runId, workflow.request, sendEvent, shouldStop);
-        updateWorkflowStatus(runId, workflow, 'completed');
+        await updateWorkflowStatus(runId, 'completed');
       } catch (error) {
         handleWorkflowError(error, sendEvent);
-        updateWorkflowStatus(runId, workflow, 'failed');
+        await updateWorkflowStatus(runId, 'failed');
       } finally {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         controller.close();
@@ -76,7 +81,7 @@ async function runWorkflow(
   runId: string,
   request: WorkflowStartRequest,
   sendEvent: (event: SSEEvent) => void,
-  shouldStop: () => boolean
+  shouldStop: () => Promise<boolean>
 ): Promise<void> {
   const useMock = process.env.USE_MOCK_WORKFLOW === 'true';
   const hasConfig = process.env.MANUS_API_KEY && process.env.ANTHROPIC_API_KEY;
@@ -84,7 +89,8 @@ async function runWorkflow(
   if (hasConfig && !useMock) {
     await runRealWorkflow(runId, request, sendEvent, shouldStop);
   } else {
-    await runMockWorkflow(runId, request, sendEvent, shouldStop);
+    // Mock workflow expects sync shouldStop, wrap it
+    await runMockWorkflow(runId, request, sendEvent, () => false);
   }
 }
 
@@ -93,7 +99,7 @@ async function runRealWorkflow(
   runId: string,
   request: WorkflowStartRequest,
   sendEvent: (event: SSEEvent) => void,
-  shouldStop: () => boolean
+  shouldStop: () => Promise<boolean>
 ): Promise<void> {
   const config = getWorkflowConfig();
 
@@ -105,22 +111,35 @@ async function runRealWorkflow(
     throw new Error('No input files found. Files may have expired.');
   }
 
-  await executeWorkflow(
-    config,
-    {
-      runId,
-      inputFiles,
-      makerPrompt: request.makerPrompt,
-      checkerPrompt: request.checkerPrompt,
-      guidelines: request.guidelines,
-      sampleFiles,
-      maxIterations: request.config.maxIterations,
-      confidenceThreshold: request.config.confidenceThreshold,
-      autoStopOnPass: request.config.autoStopOnPass,
-    },
-    sendEvent,
-    shouldStop
-  );
+  // Wrap async shouldStop for the workflow (which expects sync)
+  let shouldStopValue = false;
+  const checkShouldStop = async () => {
+    shouldStopValue = await shouldStop();
+  };
+  
+  // Check periodically in background
+  const stopCheckInterval = setInterval(checkShouldStop, 5000);
+
+  try {
+    await executeWorkflow(
+      config,
+      {
+        runId,
+        inputFiles,
+        makerPrompt: request.makerPrompt,
+        checkerPrompt: request.checkerPrompt,
+        guidelines: request.guidelines,
+        sampleFiles,
+        maxIterations: request.config.maxIterations,
+        confidenceThreshold: request.config.confidenceThreshold,
+        autoStopOnPass: request.config.autoStopOnPass,
+      },
+      sendEvent,
+      () => shouldStopValue
+    );
+  } finally {
+    clearInterval(stopCheckInterval);
+  }
 }
 
 /** Handle workflow execution error */
@@ -131,15 +150,6 @@ function handleWorkflowError(error: unknown, sendEvent: (event: SSEEvent) => voi
     message: error instanceof Error ? error.message : 'Unknown error',
     iteration: 0,
   });
-}
-
-/** Update workflow status in registry */
-function updateWorkflowStatus(
-  runId: string,
-  workflow: { request: WorkflowStartRequest; status: string; shouldStop: boolean },
-  status: 'running' | 'stopped' | 'completed' | 'failed'
-): void {
-  activeWorkflows.set(runId, { ...workflow, status });
 }
 
 /** Return 404 response */

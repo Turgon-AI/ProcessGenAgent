@@ -1,13 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { WorkflowStartRequest, WorkflowStartResponse } from '@/types';
-
-// In-memory store for active workflows (in production, use Redis or database)
-export const activeWorkflows = new Map<string, {
-  request: WorkflowStartRequest;
-  status: 'running' | 'stopped' | 'completed' | 'failed';
-  shouldStop: boolean;
-}>();
+import { setWorkflow } from '@/lib/storage/workflow-store';
 
 export async function POST(request: NextRequest) {
   try {
@@ -38,8 +32,8 @@ export async function POST(request: NextRequest) {
     // Generate a unique run ID
     const runId = uuidv4();
 
-    // Store the workflow request
-    activeWorkflows.set(runId, {
+    // Store the workflow request (uses Redis on Vercel, in-memory locally)
+    await setWorkflow(runId, {
       request: body,
       status: 'running',
       shouldStop: false,
