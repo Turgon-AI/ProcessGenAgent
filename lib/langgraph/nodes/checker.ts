@@ -172,13 +172,14 @@ async function fetchFileAsBuffer(url: string): Promise<Buffer> {
 }
 
 async function buildAttachments(files: UploadedFile[]) {
-  // Safely filter and deduplicate files
-  const safeFiles = (files || []).filter(
-    (file): file is UploadedFile => file != null && typeof file === 'object'
-  );
+  // Convert to array if it's an array-like object (can happen with LangGraph state serialization)
+  const safeFiles = toArray(files);
+  
+  console.log(`[DEBUG buildAttachments] input type: ${typeof files}, isArray: ${Array.isArray(files)}, safeCount: ${safeFiles.length}`);
   
   const unique = new Map<string, UploadedFile>();
   for (const file of safeFiles) {
+    if (!file || typeof file !== 'object') continue;
     // Use id if available, otherwise use url or name as fallback key
     const key = file.id || file.url || file.name;
     if (key && !unique.has(key)) {
@@ -201,4 +202,23 @@ async function buildAttachments(files: UploadedFile[]) {
   }
 
   return attachments;
+}
+
+/** Convert array-like objects to actual arrays */
+function toArray<T>(input: T[] | null | undefined): T[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input;
+  // Handle array-like objects (e.g., from JSON serialization)
+  if (typeof input === 'object' && input !== null) {
+    // Check if it's iterable
+    if (Symbol.iterator in input) {
+      return Array.from(input as Iterable<T>);
+    }
+    // Check if it has numeric keys (array-like)
+    const keys = Object.keys(input);
+    if (keys.every(k => !isNaN(Number(k)))) {
+      return Object.values(input) as T[];
+    }
+  }
+  return [];
 }

@@ -38,14 +38,17 @@ export function createMakerNode(deps: MakerNodeDeps) {
 
     // Convert input + sample files to Manus format (use URLs directly)
     // Only attach source files on the first iteration; Manus retains context afterward.
-    console.log(`\n[DEBUG] inputFiles: ${JSON.stringify(state.inputFiles?.length ?? 'undefined')}`);
-    console.log(`[DEBUG] sampleFiles: ${JSON.stringify(state.sampleFiles?.length ?? 'undefined')}`);
+    console.log(`\n[DEBUG] inputFiles raw: type=${typeof state.inputFiles}, isArray=${Array.isArray(state.inputFiles)}, value=${JSON.stringify(state.inputFiles)?.substring(0, 500)}`);
+    console.log(`[DEBUG] sampleFiles raw: type=${typeof state.sampleFiles}, isArray=${Array.isArray(state.sampleFiles)}, value=${JSON.stringify(state.sampleFiles)?.substring(0, 500)}`);
     
     const mergedFiles = isFirstIteration
       ? mergeFiles(state.inputFiles, state.sampleFiles)
       : [];
     
     console.log(`[DEBUG] mergedFiles count: ${mergedFiles.length}`);
+    if (mergedFiles.length > 0) {
+      console.log(`[DEBUG] mergedFiles[0]: ${JSON.stringify(mergedFiles[0])?.substring(0, 300)}`);
+    }
     
     const files = prepareInputFiles(mergedFiles);
     
@@ -133,21 +136,59 @@ function mergeFiles(inputFiles: UploadedFile[], sampleFiles: UploadedFile[]): Up
   const seen = new Set<string>();
   const merged: UploadedFile[] = [];
 
-  // Safely combine arrays, filtering out undefined/null entries
-  const allFiles = [
-    ...(inputFiles || []),
-    ...(sampleFiles || []),
-  ].filter((file): file is UploadedFile => file != null && typeof file === 'object');
+  // Debug: log the raw input
+  console.log(`[DEBUG mergeFiles] inputFiles type: ${typeof inputFiles}, isArray: ${Array.isArray(inputFiles)}`);
+  console.log(`[DEBUG mergeFiles] sampleFiles type: ${typeof sampleFiles}, isArray: ${Array.isArray(sampleFiles)}`);
+  
+  // Convert to arrays if they're array-like objects (can happen with LangGraph state serialization)
+  const safeInputFiles = toArray(inputFiles);
+  const safeSampleFiles = toArray(sampleFiles);
+  
+  console.log(`[DEBUG mergeFiles] safeInputFiles count: ${safeInputFiles.length}`);
+  console.log(`[DEBUG mergeFiles] safeSampleFiles count: ${safeSampleFiles.length}`);
+  
+  if (safeInputFiles.length > 0) {
+    console.log(`[DEBUG mergeFiles] First input file: ${JSON.stringify(safeInputFiles[0]?.name || safeInputFiles[0])}`);
+  }
+
+  const allFiles = [...safeInputFiles, ...safeSampleFiles];
 
   for (const file of allFiles) {
+    if (!file || typeof file !== 'object') {
+      console.log(`[DEBUG mergeFiles] Skipping invalid file: ${typeof file}`);
+      continue;
+    }
     // Use id if available, otherwise use url or name as fallback key
     const key = file.id || file.url || file.name;
-    if (!key || seen.has(key)) continue;
+    if (!key) {
+      console.log(`[DEBUG mergeFiles] Skipping file without key: ${JSON.stringify(file)}`);
+      continue;
+    }
+    if (seen.has(key)) continue;
     seen.add(key);
     merged.push(file);
   }
 
   return merged;
+}
+
+/** Convert array-like objects to actual arrays */
+function toArray<T>(input: T[] | null | undefined): T[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input;
+  // Handle array-like objects (e.g., from JSON serialization)
+  if (typeof input === 'object' && input !== null) {
+    // Check if it's iterable
+    if (Symbol.iterator in input) {
+      return Array.from(input as Iterable<T>);
+    }
+    // Check if it has numeric keys (array-like)
+    const keys = Object.keys(input);
+    if (keys.every(k => !isNaN(Number(k)))) {
+      return Object.values(input) as T[];
+    }
+  }
+  return [];
 }
 
 /** Create an UploadedFile record from Manus output */
