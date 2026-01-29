@@ -117,8 +117,35 @@ async function waitForTaskWithNewOutput(
   pollIntervalMs: number,
   previousOutputSignature?: string
 ): Promise<ManusTaskResponse> {
+  // Initial delay to allow task to propagate (helps with eventual consistency on cloud)
+  console.log(`[Manus] Waiting for task to propagate...`);
+  await delay(2000);
+  
+  let notFoundRetries = 0;
+  const maxNotFoundRetries = 5;
+  
   while (true) {
-    const task = await getTask(request, taskId);
+    let task: ManusTaskResponse;
+    try {
+      task = await getTask(request, taskId);
+    } catch (error) {
+      // Handle 404 errors with retry (eventual consistency)
+      if (error instanceof ManusError && error.message.includes('404')) {
+        notFoundRetries++;
+        console.log(`[Manus] Task not found (attempt ${notFoundRetries}/${maxNotFoundRetries}), retrying...`);
+        if (notFoundRetries >= maxNotFoundRetries) {
+          throw new ManusError(`Task ${taskId} not found after ${maxNotFoundRetries} attempts`, {
+            code: ErrorCode.MANUS_API_ERROR,
+          });
+        }
+        await delay(pollIntervalMs * 2); // Wait longer for 404s
+        continue;
+      }
+      throw error;
+    }
+    
+    // Reset retry counter on successful fetch
+    notFoundRetries = 0;
 
     if (task.status === 'failed') {
       throw new ManusError(task.error?.message || 'Task failed', {
