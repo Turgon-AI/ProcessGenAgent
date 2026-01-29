@@ -20,10 +20,17 @@ function getRedisClient() {
   const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
   
   if (url && token) {
-    const { Redis } = require('@upstash/redis');
-    redisClient = new Redis({ url, token });
-    console.log('[WorkflowStore] Using Upstash Redis');
-    return redisClient;
+    try {
+      const { Redis } = require('@upstash/redis');
+      redisClient = new Redis({ url, token });
+      console.log('[WorkflowStore] Initialized Upstash Redis client');
+      return redisClient;
+    } catch (error) {
+      console.error('[WorkflowStore] Failed to initialize Redis client:', error);
+      return null;
+    }
+  } else {
+    console.warn('[WorkflowStore] No Redis credentials found (KV_REST_API_URL/TOKEN or UPSTASH_REDIS_REST_URL/TOKEN missing). Using in-memory store (not persistent across serverless invocations!)');
   }
   
   return null;
@@ -40,11 +47,19 @@ export async function setWorkflow(runId: string, workflow: StoredWorkflow): Prom
   const redis = getRedisClient();
   
   if (redis) {
-    await redis.set(getWorkflowKey(runId), JSON.stringify(workflow), {
-      ex: WORKFLOW_TTL_SECONDS,
-    });
+    try {
+      await redis.set(getWorkflowKey(runId), JSON.stringify(workflow), {
+        ex: WORKFLOW_TTL_SECONDS,
+      });
+      console.log(`[WorkflowStore] Saved workflow ${runId} to Redis`);
+    } catch (error) {
+      console.error(`[WorkflowStore] Failed to save workflow ${runId} to Redis:`, error);
+      // Fallback to memory
+      memoryStore.set(runId, workflow);
+    }
   } else {
     memoryStore.set(runId, workflow);
+    console.log(`[WorkflowStore] Saved workflow ${runId} to memory`);
   }
 }
 
