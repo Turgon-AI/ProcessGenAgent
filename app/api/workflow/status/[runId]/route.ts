@@ -103,13 +103,17 @@ async function runRealWorkflow(
 ): Promise<void> {
   const config = getWorkflowConfig();
 
-  // Resolve file IDs to actual file objects from registry
-  const inputFiles = getFiles(request.fileIds);
-  const sampleFiles = getFiles(request.sampleFileIds);
+  // Resolve file IDs to actual file objects from registry (using Redis)
+  const inputFiles = await getFiles(request.fileIds);
+  const sampleFiles = await getFiles(request.sampleFileIds);
 
-  if (inputFiles.length === 0) {
-    throw new Error('No input files found. Files may have expired.');
+  // Validate files retrieved
+  if (!inputFiles || inputFiles.length === 0) {
+    console.error(`[Workflow] No input files found for run ${runId}. IDs: ${request.fileIds.join(', ')}`);
+    throw new Error('No input files found. Files may have expired or failed to load from storage.');
   }
+
+  console.log(`[Workflow] Loaded ${inputFiles.length} input files and ${sampleFiles.length} sample files for run ${runId}`);
 
   // Wrap async shouldStop for the workflow (which expects sync)
   let shouldStopValue = false;

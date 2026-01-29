@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     };
 
     // Register file for lookup by ID
-    registerFile(uploadedFile);
+    await registerFile(uploadedFile);
 
     return NextResponse.json(uploadedFile);
   } catch (error) {
