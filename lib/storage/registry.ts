@@ -8,6 +8,10 @@ const fileRegistry = new Map<string, UploadedFile>();
 
 /** Register an uploaded file */
 export function registerFile(file: UploadedFile): void {
+  if (!file || !file.id) {
+    console.warn('[Registry] Attempted to register file without id:', file);
+    return;
+  }
   fileRegistry.set(file.id, file);
 }
 

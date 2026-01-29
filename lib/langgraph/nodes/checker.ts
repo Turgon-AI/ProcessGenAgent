@@ -172,9 +172,18 @@ async function fetchFileAsBuffer(url: string): Promise<Buffer> {
 }
 
 async function buildAttachments(files: UploadedFile[]) {
+  // Safely filter and deduplicate files
+  const safeFiles = (files || []).filter(
+    (file): file is UploadedFile => file != null && typeof file === 'object'
+  );
+  
   const unique = new Map<string, UploadedFile>();
-  for (const file of files) {
-    if (!unique.has(file.id)) unique.set(file.id, file);
+  for (const file of safeFiles) {
+    // Use id if available, otherwise use url or name as fallback key
+    const key = file.id || file.url || file.name;
+    if (key && !unique.has(key)) {
+      unique.set(key, file);
+    }
   }
 
   const attachments = [];

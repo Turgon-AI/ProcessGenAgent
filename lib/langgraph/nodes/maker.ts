@@ -38,9 +38,16 @@ export function createMakerNode(deps: MakerNodeDeps) {
 
     // Convert input + sample files to Manus format (use URLs directly)
     // Only attach source files on the first iteration; Manus retains context afterward.
-    const files = isFirstIteration
-      ? prepareInputFiles(mergeFiles(state.inputFiles, state.sampleFiles))
+    console.log(`\n[DEBUG] inputFiles: ${JSON.stringify(state.inputFiles?.length ?? 'undefined')}`);
+    console.log(`[DEBUG] sampleFiles: ${JSON.stringify(state.sampleFiles?.length ?? 'undefined')}`);
+    
+    const mergedFiles = isFirstIteration
+      ? mergeFiles(state.inputFiles, state.sampleFiles)
       : [];
+    
+    console.log(`[DEBUG] mergedFiles count: ${mergedFiles.length}`);
+    
+    const files = prepareInputFiles(mergedFiles);
     
     console.log(`\n[FILES SENT TO MANUS]:`);
     if (files.length > 0) {
@@ -126,9 +133,17 @@ function mergeFiles(inputFiles: UploadedFile[], sampleFiles: UploadedFile[]): Up
   const seen = new Set<string>();
   const merged: UploadedFile[] = [];
 
-  for (const file of [...inputFiles, ...sampleFiles]) {
-    if (seen.has(file.id)) continue;
-    seen.add(file.id);
+  // Safely combine arrays, filtering out undefined/null entries
+  const allFiles = [
+    ...(inputFiles || []),
+    ...(sampleFiles || []),
+  ].filter((file): file is UploadedFile => file != null && typeof file === 'object');
+
+  for (const file of allFiles) {
+    // Use id if available, otherwise use url or name as fallback key
+    const key = file.id || file.url || file.name;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
     merged.push(file);
   }
 
